@@ -1,29 +1,30 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertModel
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import pandas as pd
 import numpy as np
-from nltk.corpus import movie_reviews
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
-import slackweb
+from torch.utils.data import DataLoader, Dataset
+from transformers import BertModel, BertTokenizer
 
-slack = slackweb.Slack(url="https://hooks.slack.com/services/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")
 
 # https://medium.com/swlh/painless-fine-tuning-of-bert-in-pytorch-b91c14912caa
-class DisasterClassifier(nn.Module):
-    def __init__(self, freeze_bert = True, hidden_size=768, num_class=2):
-        super(DisasterClassifier, self).__init__()
+class BertClassifier(nn.Module):
+    def __init__(self, freeze_bert = True, hidden_size=1024, num_layers=25, num_class=2):
+        super(BertClassifier, self).__init__()
         #Instantiating BERT model obeject
         self.bert_layer = BertModel.from_pretrained(
-            'bert-base-uncased', 
+            'bert-large-uncased', 
             output_hidden_states=True, 
             output_attentions=True,
-            attention_probs_dropout_prob=0.1,
-            hidden_dropout_prob=0.1
+            attention_probs_dropout_prob=0.6,
+            hidden_dropout_prob=0.6
         )
+        
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
     
         #Freeze bert layers
         if freeze_bert:
@@ -31,11 +32,11 @@ class DisasterClassifier(nn.Module):
                 p.requires_grad = False
                 
         #Classification Layer
-        self.weights = nn.Parameter(torch.rand(13, 1))
+        self.weights = nn.Parameter(torch.rand(self.num_layers, 1))
         self.dropouts = nn.ModuleList([
             nn.Dropout(0.5) for _ in range(5)
         ])
-        self.fc = nn.Linear(hidden_size, num_class-1) 
+        self.fc = nn.Linear(self.hidden_size, num_class-1) 
 
     def forward(self, seq, attn_masks):
         '''
@@ -48,11 +49,11 @@ class DisasterClassifier(nn.Module):
         cont_reps, _ = self.bert_layer(seq, attention_mask = attn_masks)[-2:]
 
         batch_size = seq.shape[0]
-        ht_cls = torch.cat(cont_reps)[:, :1, :].view(13, batch_size, 1, 768)
+        ht_cls = torch.cat(cont_reps)[:, :1, :].view(self.num_layers, batch_size, 1, self.hidden_size)
         #Obtaining the representation of [CLS} head
-        atten = torch.sum(ht_cls * self.weights.view(13, 1, 1, 1), dim=[1, 3])
+        atten = torch.sum(ht_cls * self.weights.view(self.num_layers, 1, 1, 1), dim=[1, 3])
         atten = F.softmax(atten.view(-1), dim=0)
-        feature = torch.sum(ht_cls * atten.view(13, 1, 1, 1), dim=[0, 2])
+        feature = torch.sum(ht_cls * atten.view(self.num_layers, 1, 1, 1), dim=[0, 2])
         
         for i, dropout in enumerate(self.dropouts):
             if i==0:
@@ -62,6 +63,10 @@ class DisasterClassifier(nn.Module):
                 
             h = h / len(self.dropouts)
         return h
+    
+    def freeze_bert(self):
+        for p in self.bert_layer.parameters():
+            p.requires_grad = False
     
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -110,13 +115,18 @@ def train(net, criterion, opti, train_loader, val_loader, max_eps, patience, pri
     best_acc = 0
     early_stopping = EarlyStopping(patience=patience, verbose=True)
 
-    for ep in range(1, max_eps):
-        for it, (seq, attn_masks, labels) in enumerate(train_loader):
+    for ep in range(1, max_eps+1):
+        if ep > 1:
+                net.freeze_bert()
+        
+        for it, (Id, seq, attn_masks, labels) in enumerate(train_loader):
             #Clear gradients
             opti.zero_grad()
             #Converting these to cuda tensors
             seq, attn_masks, labels = seq.cuda(), attn_masks.cuda(), labels.cuda()
-
+            
+            # freeze bert layer from the 2 iteration
+                
             #Obtaining the logits from the model
             logits = net(seq, attn_masks)
 
@@ -134,25 +144,20 @@ def train(net, criterion, opti, train_loader, val_loader, max_eps, patience, pri
                 print("Iteration {} of epochs {} complete. Loss : {} Accuracy : {}".format(it+1, ep, loss.item(), acc))
         
         # print score
-        train_acc, train_loss = evaluate(net, criterion, train_loader)
-        print("Epoch {} complete! Train Accuracy : {}, Train Loss : {}".format(ep, train_acc, train_loss))
-        val_acc, val_loss = evaluate(net, criterion, val_loader)
-        print("Epoch {} complete! Validation Accuracy : {}, Validation Loss : {}".format(ep, val_acc, val_loss))
-        
-        nf_train = "Epoch {} complete! Train Accuracy : {}, Train Loss : {}".format(ep, train_acc, train_loss)
-        nf_validation = "Epoch {} complete! Validation Accuracy : {}, Validation Loss : {}".format(ep, val_acc, val_loss)
-        
-        slack.notify(text=nf_train+'\n'+nf_validation)
+        train_f1, train_acc, train_loss = evaluate(net, criterion, train_loader)
+        print("Epoch {} complete! Train F1 : {}, Train Accuracy : {}, Train Loss : {}".format(ep, train_f1, train_acc, train_loss))
+        val_f1, val_acc, val_loss = evaluate(net, criterion, val_loader)
+        print("Epoch {} complete! Validation F1 : {}, Validation Accuracy : {}, Validation Loss : {}".format(ep, val_f1, val_acc, val_loss))
 
         early_stopping(val_loss, net)
-
-        if early_stopping.early_stop:
-            print("Early stopping")
-            break
 
         if val_acc > best_acc:
             print("Best validation accuracy improved from {} to {}".format(best_acc, val_acc))
             best_acc = val_acc
+            
+        if early_stopping.early_stop:
+            print("Early stopping")
+            break
 
 def get_accuracy_from_logits(logits, labels):
     probs = torch.sigmoid(logits.unsqueeze(-1))
@@ -160,20 +165,30 @@ def get_accuracy_from_logits(logits, labels):
     acc = (soft_probs.squeeze() == labels).float().mean()
     return acc
 
+def get_class_from_logits(logits):
+    probs = torch.sigmoid(logits.unsqueeze(-1))
+    return (probs > 0.5).long().squeeze().tolist()
+
 def evaluate(net, criterion, dataloader):
     net.eval()
     mean_acc, mean_loss = 0, 0
     count = 0
+    
+    y, y_pred = [], []
 
     with torch.no_grad():
-        for seq, attn_masks, labels in dataloader:
+        for _, seq, attn_masks, labels in dataloader:
             seq, attn_masks, labels = seq.cuda(), attn_masks.cuda(), labels.cuda()
             logits = net(seq, attn_masks)
             mean_loss += criterion(logits.squeeze(-1), labels.float()).item()
             mean_acc += get_accuracy_from_logits(logits, labels)
             count += 1
             
-    return mean_acc / count, mean_loss / count
+            y_pred += get_class_from_logits(logits)
+            y += labels.tolist()
+    
+    f1 = f1_score(y, y_pred, average=None)[0]
+    return f1, mean_acc / count, mean_loss / count
 
 class TweetDataset(Dataset):
   
@@ -183,7 +198,7 @@ class TweetDataset(Dataset):
         self.df = df
 
         #Initialize the BERT tokenizer
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('bert-large-uncased', do_lower_case=True)
 
         self.maxlen= maxlen
     
@@ -193,6 +208,7 @@ class TweetDataset(Dataset):
     def __getitem__(self, index):
 
         #Selecting the sentence and label at the specified index in the dataframe
+        Id = self.df.loc[index, 'id']
         sentence = self.df.loc[index, 'text']
         label = self.df.loc[index, 'target']
 
@@ -210,38 +226,68 @@ class TweetDataset(Dataset):
         #Obtaining the attention mask i.e a tensor containing 1s for no padded tokens and 0s for padded ones
         attn_mask = (tokens_ids_tensor != 0).long()
 
-        return tokens_ids_tensor, attn_mask, label
+        return Id, tokens_ids_tensor, attn_mask, label
 
-if __name__ == "__main__":
-    pos = [movie_reviews.raw(file) for file in movie_reviews.fileids('pos')]
-    neg = [movie_reviews.raw(file) for file in movie_reviews.fileids('neg')]
-    df = pd.DataFrame([[doc, 1] for doc in pos] + [[doc, 0] for doc in neg], columns=('text', 'target'))
-    df_train, df_test = train_test_split(df, test_size=0.1, random_state=100, stratify=df.target.values.tolist())
-    df_train = df_train.reset_index()
-    df_test = df_test.reset_index()
-
-    # http://jalammar.github.io/a-visual-guide-to-using-bert-for-the-first-time/
-    freeze_bert = True
-    maxlen = 512
-    batch_size = 16
-    lr = 1e-3
-    print_every = 2000
-    max_eps = 300
-    patience = 5
-
-    #Creating instances of training and validation set
-    train_set = TweetDataset(df = df_train, maxlen = maxlen)
-    valid_set = TweetDataset(df = df_test, maxlen = maxlen) 
-
-    #Creating intsances of training and validation dataloaders
-    train_loader = DataLoader(train_set, batch_size = batch_size, num_workers = 5)
-    valid_loader = DataLoader(valid_set, batch_size = batch_size, num_workers = 5)
-
-    net = DisasterClassifier(freeze_bert = freeze_bert)
+# http://jalammar.github.io/a-visual-guide-to-using-bert-for-the-first-time/
+def main(train_loader, valid_loader, freeze_bert=False, lr=1e-5, print_every=2000, max_eps=5, patience=1):
+    net = BertClassifier(freeze_bert = freeze_bert)
 
     criterion = nn.BCEWithLogitsLoss()
-    opti = optim.Adam(net.parameters(), lr = lr)
+
+    # AdamW
+    param_optimizer = list(net.named_parameters())
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
+    opti = optim.AdamW(optimizer_grouped_parameters, lr=lr, eps=1e-6)
 
     net.cuda()
 
     train(net, criterion, opti, train_loader, valid_loader, max_eps, patience, print_every)
+
+    return net
+
+def predict(net, test_loader):
+    y_pred = {}
+    
+    for ids, seq, attn_masks in test_loader:
+            #Converting these to cuda tensors
+            ids, seq, attn_masks = ids.cuda(), seq.cuda(), attn_masks.cuda()
+
+            #Obtaining the logits from the model
+            logits = net(seq, attn_masks)
+            
+            for Id, label in zip(ids, get_class_from_logits(logits)):
+                y_pred[Id.long().item()] = label
+    
+    return pd.DataFrame([[index, label] for (index, label) in sorted(y_pred.items(), key=lambda x: x[0])], columns=('id', 'target'))
+
+if __name__ == "__main__":
+    df, df_test = pd.read_csv('./data/train.csv'), pd.read_csv('./data/test_leak.csv')
+    df_train, df_valid = train_test_split(df, test_size=0.15, random_state=42, stratify=df.target.values.tolist())
+    df_train, df_valid = df_train.reset_index(), df_valid.reset_index()
+
+    maxlen, batch_size = 40, 8
+
+    #Creating instances of training and validation set
+    train_set = TweetDataset(df = df, maxlen = maxlen)
+    test_set = TweetDataset(df = df_test, maxlen = maxlen)
+
+    #Creating intsances of training and validation dataloaders
+    train_loader = DataLoader(train_set, batch_size = batch_size, num_workers = 5)
+    test_loader = DataLoader(test_set, batch_size = batch_size, num_workers = 5)
+
+    net = main(
+        train_loader, 
+        train_loader, 
+        freeze_bert=False, 
+        lr=1e-5, 
+        print_every=2000, 
+        max_eps=5, 
+        patience=1
+    )
+
+    submit = predict(net, test_loader)
+    submit.to_csv('./output/submit.csv', index=None)
