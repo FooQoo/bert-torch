@@ -19,8 +19,8 @@ class BertClassifier(nn.Module):
             'bert-large-uncased', 
             output_hidden_states=True, 
             output_attentions=True,
-            attention_probs_dropout_prob=0.6,
-            hidden_dropout_prob=0.6
+            attention_probs_dropout_prob=0.5,
+            hidden_dropout_prob=0.5
         )
         
         self.hidden_size = hidden_size
@@ -282,9 +282,9 @@ if __name__ == "__main__":
     net = main(
         train_loader, 
         test_loader, 
-        freeze_bert=False, 
-        lr=1e-5, 
-        print_every=2000, 
+        freeze_bert=False,
+        lr=1e-5,
+        print_every=2000,
         max_eps=5, 
         patience=1
     )
