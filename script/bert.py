@@ -72,7 +72,7 @@ class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
     def __init__(self, patience=7, verbose=False, delta=0):
         """
-        Args: 
+        Args:
           patience (int): How long to wait after last time validation loss improved.
                           Default: 7
           verbose (bool): If True, prints a message for each validation loss improvement.
@@ -253,14 +253,14 @@ def predict(net, test_loader):
     y_pred = {}
     
     for ids, seq, attn_masks, _ in test_loader:
-            #Converting these to cuda tensors
-            ids, seq, attn_masks = ids.cuda(), seq.cuda(), attn_masks.cuda()
+        #Converting these to cuda tensors
+        ids, seq, attn_masks = ids.cuda(), seq.cuda(), attn_masks.cuda()
 
-            #Obtaining the logits from the model
-            logits = net(seq, attn_masks)
-            
-            for Id, label in zip(ids, get_class_from_logits(logits)):
-                y_pred[Id.long().item()] = label
+        #Obtaining the logits from the model
+        logits = net(seq, attn_masks)
+        
+        for Id, label in zip(ids, get_class_from_logits(logits)):
+            y_pred[Id.long().item()] = label
     
     return pd.DataFrame([[index, label] for (index, label) in sorted(y_pred.items(), key=lambda x: x[0])], columns=('id', 'target'))
 
@@ -281,7 +281,7 @@ if __name__ == "__main__":
 
     net = main(
         train_loader, 
-        train_loader, 
+        test_loader, 
         freeze_bert=False, 
         lr=1e-5, 
         print_every=2000, 
