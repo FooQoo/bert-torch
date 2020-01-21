@@ -252,7 +252,7 @@ def main(train_loader, valid_loader, freeze_bert=False, lr=1e-5, print_every=200
 def predict(net, test_loader):
     y_pred = {}
     
-    for ids, seq, attn_masks, labels in test_loader:
+    for ids, seq, attn_masks, _ in test_loader:
             #Converting these to cuda tensors
             ids, seq, attn_masks = ids.cuda(), seq.cuda(), attn_masks.cuda()
 
