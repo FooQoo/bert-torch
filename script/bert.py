@@ -119,7 +119,7 @@ def train(net, criterion, opti, train_loader, val_loader, max_eps, patience, pri
         if ep > 1:
                 net.freeze_bert()
         
-        for it, (Id, seq, attn_masks, labels) in enumerate(train_loader):
+        for it, (_, seq, attn_masks, labels) in enumerate(train_loader):
             #Clear gradients
             opti.zero_grad()
             #Converting these to cuda tensors
@@ -252,7 +252,7 @@ def main(train_loader, valid_loader, freeze_bert=False, lr=1e-5, print_every=200
 def predict(net, test_loader):
     y_pred = {}
     
-    for ids, seq, attn_masks in test_loader:
+    for ids, seq, attn_masks, labels in test_loader:
             #Converting these to cuda tensors
             ids, seq, attn_masks = ids.cuda(), seq.cuda(), attn_masks.cuda()
 
